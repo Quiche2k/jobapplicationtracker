@@ -6,10 +6,7 @@
     <title>Job Application Tracker (Cloud Synced)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        /* Custom font */
         body { font-family: 'Inter', sans-serif; background-color: #f3f4f6; }
-        
-        /* Custom styles for Status dropdown */
         .status-select {
             appearance: none;
             background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23374151'%3e%3cpath d='M7 7l3-3 3 3m0 6l-3 3-3-3' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3e%3c/svg%3e");
@@ -17,23 +14,24 @@
             background-position: right 0.75rem center;
             background-size: 1.5em 1.5em;
         }
-        /* Status color indicators */
         .status-Applied { background-color: #dbeafe; color: #1d4ed8; font-weight: 500; }
         .status-InterviewScheduled { background-color: #fef3c7; color: #b45309; font-weight: 500; }
         .status-OfferReceived { background-color: #d1fae5; color: #065f46; font-weight: 600; }
         .status-Rejected { background-color: #fee2e2; color: #991b1b; font-weight: 500; }
         .status-Withdrawn { background-color: #e5e7eb; color: #4b5563; font-weight: 500; }
         
-        /* Loading overlay */
         #loading {
-            position: fixed; inset: 0; background: rgba(255,255,255,0.8);
-            display: flex; justify-content: center; align-items: center; z-index: 50;
+            position: fixed; inset: 0; background: rgba(255,255,255,0.9);
+            display: flex; flex-direction: column; justify-content: center; align-items: center; z-index: 50;
         }
     </style>
 </head>
 <body class="p-4 sm:p-8">
 
-    <div id="loading"><div class="text-indigo-600 text-xl font-bold animate-pulse">Syncing with Cloud...</div></div>
+    <div id="loading">
+        <div class="text-indigo-600 text-2xl font-bold animate-pulse mb-2">Connecting to Cloud...</div>
+        <div id="migration-status" class="text-gray-500 text-sm"></div>
+    </div>
 
     <div class="max-w-7xl mx-auto bg-white shadow-xl rounded-xl p-6 lg:p-10">
         <h1 class="text-3xl font-bold text-gray-900 mb-6 border-b pb-2">Application Tracker Dashboard</h1>
@@ -70,19 +68,16 @@
                         <th class="px-3 py-2 text-left text-sm font-medium tracking-wider w-20">Action</th>
                     </tr>
                 </thead>
-                <tbody id="application-table-body" class="bg-white divide-y divide-gray-100">
-                    </tbody>
+                <tbody id="application-table-body" class="bg-white divide-y divide-gray-100"></tbody>
             </table>
         </div>
     </div>
 
     <script type="module">
-        // Import the functions you need from the SDKs you need
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
         import { getFirestore, collection, addDoc, onSnapshot, deleteDoc, doc, updateDoc, query, orderBy } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
-        // TODO: Replace the following with your app's Firebase project configuration
-        // You get this from the Firebase Console -> Project Settings
+        // --- PASTE YOUR FIREBASE CONFIG HERE ---
         const firebaseConfig = {
             apiKey: "AIzaSyD5ExD6cm_t4GezTTp9G102z5cbNIo1PKg",
   authDomain: "job-tracker-833e8.firebaseapp.com",
@@ -92,44 +87,70 @@
   appId: "1:770915398518:web:f4b36ef9f7560d311a8057"
         };
 
-        // Initialize Firebase
         const app = initializeApp(firebaseConfig);
         const db = getFirestore(app);
         const appsCollection = collection(db, "applications");
 
-        // DOM Elements
         const form = document.getElementById('application-form');
         const tableBody = document.getElementById('application-table-body');
         const applicationCount = document.getElementById('application-count');
         const loadingDiv = document.getElementById('loading');
+        const migrationMsg = document.getElementById('migration-status');
         
         let applications = [];
 
-        // --- REAL-TIME LISTENER ---
-        // This replaces "loadApplications". It runs automatically whenever the database changes.
+        // --- 1. MIGRATION FUNCTION ---
+        // This checks for old data and moves it to the cloud automatically
+        const migrateOldData = async () => {
+            const oldData = localStorage.getItem('jobApplications');
+            if (oldData) {
+                const oldApps = JSON.parse(oldData);
+                if (oldApps.length > 0) {
+                    migrationMsg.textContent = `Found ${oldApps.length} old entries. Moving to cloud...`;
+                    console.log("Migrating data...");
+                    
+                    for (const oldApp of oldApps) {
+                        // Create a new cloud entry for each local one
+                        await addDoc(appsCollection, {
+                            jobTitle: oldApp.jobTitle || 'Unknown',
+                            companyName: oldApp.companyName || 'Unknown',
+                            closingDate: oldApp.closingDate || new Date().toISOString(),
+                            dateApplied: oldApp.dateApplied || new Date().toISOString(),
+                            jobLink: oldApp.jobLink || '',
+                            status: oldApp.status || 'Applied',
+                            timestamp: new Date()
+                        });
+                    }
+                    migrationMsg.textContent = "Migration complete!";
+                }
+                // Clear local storage so we don't migrate again
+                localStorage.removeItem('jobApplications');
+            }
+        };
+
+        // --- 2. REAL-TIME LISTENER ---
         const q = query(appsCollection, orderBy("closingDate", "asc"));
         
-        onSnapshot(q, (snapshot) => {
-            applications = snapshot.docs.map(doc => ({
-                id: doc.id, // Store the Firebase document ID
-                ...doc.data()
-            }));
-            renderTable();
-            loadingDiv.style.display = 'none'; // Hide loader once data arrives
-        }, (error) => {
-            console.error("Error getting documents: ", error);
-            alert("Error syncing data. Check console.");
-            loadingDiv.style.display = 'none';
+        // Run migration logic first, then start listening
+        migrateOldData().then(() => {
+            onSnapshot(q, (snapshot) => {
+                applications = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                renderTable();
+                loadingDiv.style.display = 'none';
+            }, (error) => {
+                console.error("Error:", error);
+                alert("Error connecting to database.");
+                loadingDiv.style.display = 'none';
+            });
         });
 
-        // Format date for display
+        // --- 3. HELPER FUNCTIONS ---
         const formatDate = (dateString) => {
             if(!dateString) return 'N/A';
             const options = { month: 'short', day: 'numeric', year: 'numeric' };
             return new Date(dateString).toLocaleDateString(undefined, options);
         };
 
-        // Render the table
         const renderTable = () => {
             tableBody.innerHTML = '';
             applicationCount.textContent = applications.length;
@@ -144,7 +165,6 @@
                 row.className = 'hover:bg-gray-50 transition duration-100';
                 
                 const statusOptions = ['Applied', 'Interview Scheduled', 'Offer Received', 'Rejected', 'Withdrawn'];
-
                 const linkHtml = app.jobLink ? 
                     `<a href="${app.jobLink}" target="_blank" class="text-indigo-600 hover:text-indigo-800 font-medium truncate inline-block max-w-full" title="${app.jobLink}">${app.jobLink.replace(/^https?:\/\//, '').split('/')[0]}</a>` :
                     `<span class="text-gray-400 italic">N/A</span>`;
@@ -159,11 +179,7 @@
                         <div class="text-sm font-bold text-red-500">Close: ${formatDate(app.closingDate)}</div>
                     </td>
                     <td class="px-3 py-3 whitespace-nowrap">
-                        <select 
-                            data-id="${app.id}" 
-                            class="status-select p-2 border border-gray-300 rounded-full text-xs status-${app.status.replace(/\s/g, '')}"
-                            onchange="window.updateStatus(this)"
-                        >
+                        <select data-id="${app.id}" class="status-select p-2 border border-gray-300 rounded-full text-xs status-${app.status.replace(/\s/g, '')}" onchange="window.updateStatus(this)">
                             ${statusOptions.map(option => `<option value="${option}" ${app.status === option ? 'selected' : ''}>${option}</option>`).join('')}
                         </select>
                     </td>
@@ -178,13 +194,11 @@
             });
         };
 
-        // Handle form submission (Add to Firestore)
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
             const submitBtn = form.querySelector('button[type="submit"]');
-            submitBtn.disabled = true;
-            submitBtn.textContent = "Saving...";
-
+            submitBtn.disabled = true; submitBtn.textContent = "Saving...";
+            
             const newApp = {
                 jobTitle: document.getElementById('job-title').value,
                 companyName: document.getElementById('company-name').value,
@@ -192,50 +206,28 @@
                 dateApplied: document.getElementById('date-applied').value,
                 jobLink: document.getElementById('job-link').value,
                 status: 'Applied',
-                timestamp: new Date() // Useful for sorting
+                timestamp: new Date()
             };
 
             if (new Date(newApp.closingDate) < new Date(newApp.dateApplied)) {
                 alert("Closing Date cannot be before the Date Applied.");
-                submitBtn.disabled = false; submitBtn.textContent = "Add Application";
-                return;
+                submitBtn.disabled = false; submitBtn.textContent = "Add Application"; return;
             }
 
-            try {
-                await addDoc(appsCollection, newApp);
-                form.reset();
-                document.getElementById('date-applied').valueAsDate = new Date();
-            } catch (error) {
-                console.error("Error adding document: ", error);
-                alert("Could not save to cloud.");
-            }
-            submitBtn.disabled = false;
-            submitBtn.textContent = "Add Application";
+            try { await addDoc(appsCollection, newApp); form.reset(); document.getElementById('date-applied').valueAsDate = new Date(); }
+            catch (error) { console.error(error); alert("Save failed"); }
+            submitBtn.disabled = false; submitBtn.textContent = "Add Application";
         });
 
-        // Make functions globally available for HTML onclick attributes
         window.deleteApplication = async (id, title) => {
-            if (confirm(`Delete application for "${title}"?`)) {
-                try {
-                    await deleteDoc(doc(db, "applications", id));
-                } catch(e) { console.error(e); alert("Delete failed"); }
-            }
+            if (confirm(`Delete application for "${title}"?`)) { await deleteDoc(doc(db, "applications", id)); }
         };
 
         window.updateStatus = async (selectElement) => {
             const id = selectElement.getAttribute('data-id');
-            const newStatus = selectElement.value;
-            try {
-                const appRef = doc(db, "applications", id);
-                await updateDoc(appRef, { status: newStatus });
-            } catch(e) {
-                console.error(e);
-                alert("Update failed");
-                // Reset select if failed (optional complexity omitted for brevity)
-            }
+            await updateDoc(doc(db, "applications", id), { status: selectElement.value });
         };
 
-        // Init date on load
         document.getElementById('date-applied').valueAsDate = new Date();
     </script>
 </body>
